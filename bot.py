@@ -23,7 +23,7 @@ if sys.stdout is not None:
 # Load environment variables
 load_dotenv(override=True)
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
@@ -34,17 +34,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize Gemini Client with Proxy
+# Initialize Gemini Client
 client = None
 if GEMINI_API_KEY:
     try:
         http_opts = types.HttpOptions(client_args={"proxy": TELEGRAM_PROXY}) if TELEGRAM_PROXY else None
         client = genai.Client(api_key=GEMINI_API_KEY, http_options=http_opts)
-        logger.info("Gemini client successfully initialized with proxy.")
+        logger.info("Gemini client successfully initialized.")
     except Exception as e:
         logger.error(f"Failed to initialize Gemini client: {e}")
 
-# In-memory chat history: user_id -> list of {'role': ..., 'parts': [...]}
+# In-memory chat history: user_id -> list of types.Content
 user_histories = {}
 MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
 
@@ -63,21 +63,27 @@ def split_message(text: str, max_length: int = 4000):
     return chunks
 
 
+async def send_safe_reply(message, text: str):
+    """Sends reply safely using Markdown, falling back to plain text."""
+    for chunk in split_message(text):
+        try:
+            await message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await message.reply_text(chunk)
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles /start command."""
     user = update.effective_user
     greeting = (
         f"👋 Привет, {user.first_name}!\n\n"
-        f"Я твой личный AI-ассистент в Telegram на базе Gemini 3.8 Flash.\n\n"
-        f"🔒 *Безопасность:*\n"
-        f"Я нахожусь только в этом личном диалоге. Я не имею доступа к твоим контактам, "
-        f"другим чатам или черновикам.\n\n"
-        f"📌 *Команды:*\n"
-        f"• Просто пиши любой вопрос или задачу.\n"
+        f"Я твой персональный AI-ассистент на базе модели Gemini 3.8 Flash.\n\n"
+        f"📌 Доступные команды:\n"
+        f"• Просто напиши любой вопрос или задачу.\n"
         f"• /reset — начать новый диалог (очистить историю).\n"
         f"• /status — статус подключения и модели."
     )
-    await update.message.reply_text(greeting, parse_mode=ParseMode.MARKDOWN)
+    await send_safe_reply(update.message, greeting)
 
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -85,20 +91,21 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in user_histories:
         del user_histories[user_id]
-    await update.message.reply_text("🧹 Память диалога очищена. О чём поговорим?")
+    await send_safe_reply(update.message, "🧹 Память диалога очищена. О чём поговорим?")
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reports bot status."""
     has_key = "✅ Активен" if GEMINI_API_KEY else "❌ Не указан"
+    bot_user = context.bot.username or "Bot"
     status_text = (
-        f"⚙️ *Статус системы:*\n"
-        f"• Бот: ✅ Онлайн (@{context.bot.username})\n"
+        f"⚙️ Статус системы:\n"
+        f"• Telegram Bot: ✅ Онлайн (@{bot_user})\n"
         f"• Gemini AI: {has_key}\n"
-        f"• Модель: `{MODELS[0]}`\n"
-        f"• Ваш ID: `{update.effective_user.id}`"
+        f"• Модель: {MODELS[0]}\n"
+        f"• Ваш ID: {update.effective_user.id}"
     )
-    await update.message.reply_text(status_text, parse_mode=ParseMode.MARKDOWN)
+    await send_safe_reply(update.message, status_text)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -123,7 +130,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Error initializing Gemini: {err}")
 
     if not client:
-        await update.message.reply_text("⚠️ Ошибка: Gemini API ключ не загружен.")
+        await send_safe_reply(update.message, "⚠️ Ошибка: Gemini API ключ не загружен.")
         return
 
     # Maintain history
@@ -152,8 +159,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not answer:
         logger.error(f"All models failed: {last_err}")
-        await update.message.reply_text(f"⚠️ Не удалось получить ответ: {last_err}")
-        # remove failed user message from history
+        await send_safe_reply(update.message, f"⚠️ Не удалось получить ответ: {last_err}")
         if history:
             history.pop()
         return
@@ -165,11 +171,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(history) > 20:
         user_histories[user_id] = history[-20:]
 
-    for chunk in split_message(answer):
-        try:
-            await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
-        except Exception:
-            await update.message.reply_text(chunk)
+    await send_safe_reply(update.message, answer)
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -200,23 +202,18 @@ def main():
         return
 
     print("Запуск бота Telegram с поддержкой Gemini 3.8 Flash...")
-    import time
-    while True:
-        try:
-            builder = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN)
-            if TELEGRAM_PROXY:
-                builder = builder.proxy(TELEGRAM_PROXY).get_updates_proxy(TELEGRAM_PROXY)
+    builder = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN)
+    if TELEGRAM_PROXY:
+        builder = builder.proxy(TELEGRAM_PROXY).get_updates_proxy(TELEGRAM_PROXY)
 
-            application = builder.build()
-            application.add_handler(CommandHandler("start", start_command))
-            application.add_handler(CommandHandler("reset", reset_command))
-            application.add_handler(CommandHandler("status", status_command))
-            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application = builder.build()
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("reset", reset_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-            application.run_polling(drop_pending_updates=True)
-        except Exception as e:
-            logger.error(f"Ошибка в работе бота: {e}. Перезапуск через 5 сек...")
-            time.sleep(5)
+    print("Бот готов к общению!")
+    application.run_polling(drop_pending_updates=False)
 
 
 if __name__ == "__main__":
