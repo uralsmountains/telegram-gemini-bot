@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+working_proxy.txt
+find_proxy.py
+scan_http_proxies.py
+test_proxy.py
+.venv/
+venv/
