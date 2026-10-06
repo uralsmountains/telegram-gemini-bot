@@ -17,7 +17,8 @@ from google import genai
 from google.genai import types
 
 # Ensure stdout flushes immediately
-sys.stdout.reconfigure(line_buffering=True)
+if sys.stdout is not None:
+    sys.stdout.reconfigure(line_buffering=True)
 
 # Load environment variables
 load_dotenv(override=True)
