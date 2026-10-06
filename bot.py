@@ -199,22 +199,24 @@ def main():
         print("Ошибка: TELEGRAM_BOT_TOKEN не указан в файле .env")
         return
 
-    print("Запуск бота Telegram с поддержкой Gemini...")
-    builder = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN)
+    print("Запуск бота Telegram с поддержкой Gemini 3.8 Flash...")
+    import time
+    while True:
+        try:
+            builder = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN)
+            if TELEGRAM_PROXY:
+                builder = builder.proxy(TELEGRAM_PROXY).get_updates_proxy(TELEGRAM_PROXY)
 
-    if TELEGRAM_PROXY:
-        print(f"Используем прокси: {TELEGRAM_PROXY}")
-        builder = builder.proxy(TELEGRAM_PROXY).get_updates_proxy(TELEGRAM_PROXY)
+            application = builder.build()
+            application.add_handler(CommandHandler("start", start_command))
+            application.add_handler(CommandHandler("reset", reset_command))
+            application.add_handler(CommandHandler("status", status_command))
+            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    application = builder.build()
-
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("reset", reset_command))
-    application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("Бот готов к общению!")
-    application.run_polling()
+            application.run_polling(drop_pending_updates=True)
+        except Exception as e:
+            logger.error(f"Ошибка в работе бота: {e}. Перезапуск через 5 сек...")
+            time.sleep(5)
 
 
 if __name__ == "__main__":
