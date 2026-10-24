@@ -14,20 +14,38 @@ def get_now() -> datetime:
     return datetime.now(tz).replace(tzinfo=None)
 
 def clean_response(text: str) -> str:
-    """Очищает ответ от возможных рассуждений ИИ вслух и черновиков."""
-    if "*Drafting the response:*" in text:
-        text = text.split("*Drafting the response:*")[-1].strip()
-    elif "Drafting:" in text:
-        text = text.split("Drafting:")[-1].strip()
-    elif "Draft:" in text:
-        text = text.split("Draft:")[-1].strip()
+    """Очищает ответ от технических рассуждений и черновиков ИИ."""
+    lines = text.strip().split("\n")
+    cleaned = []
+    is_meta = False
 
-    # Убираем случайные кавычки по краям
-    text = text.strip().strip('"').strip("'").strip()
-    return text
+    for line in lines:
+        s = line.strip()
+        # Признаки мета-рассуждений ИИ
+        meta_triggers = [
+            "*   Role:", "* Role:", "User asks:", "User Intent:", "Constraint:",
+            "Input:", "Drafting", "Option 1:", "Option 2:", "Option 3:",
+            "*   Context:", "* Context:", "Scenario A:", "Scenario B:"
+        ]
+        if any(trigger in s for trigger in meta_triggers) or (s.startswith("*   ") and ":" in s):
+            is_meta = True
+            continue
+        if is_meta and (not s or s.startswith("*") or s.startswith("Option") or s.startswith("Draft")):
+            continue
+        is_meta = False
+        cleaned.append(line)
+
+    result = "\n".join(cleaned).strip()
+    # Если фильтр всё вырезал, возвращаем последнюю непустую строку
+    if not result:
+        non_empty = [l.strip() for l in lines if l.strip()]
+        result = non_empty[-1] if non_empty else text
+
+    # Убираем случайные внешние кавычки
+    return result.strip().strip('"').strip("'").strip()
 
 async def get_best_model(session: aiohttp.ClientSession, api_key: str, headers: dict) -> list:
-    """Динамически запрашивает список доступных моделей у Google."""
+    """Запрашивает список доступных моделей у Google, исключая thinking-модели."""
     global CACHED_MODEL
     candidates = []
     if CACHED_MODEL:
@@ -39,17 +57,22 @@ async def get_best_model(session: aiohttp.ClientSession, api_key: str, headers: 
             if resp.status == 200:
                 data = await resp.json()
                 for m in data.get("models", []):
+                    name = m.get("name", "").replace("models/", "")
+                    # Исключаем thinking-модели, которые печатают рассуждения вслух
+                    if "thinking" in name.lower():
+                        continue
                     if "generateContent" in m.get("supportedGenerationMethods", []):
-                        name = m["name"].replace("models/", "")
-                        candidates.append(name)
+                        if "flash" in name.lower() and name not in candidates:
+                            candidates.append(name)
     except Exception as e:
         logger.warning(f"Ошибка получения списка моделей: {e}")
 
+    # Надежные стандартные модели
     fallback_defaults = [
         "gemini-1.5-flash",
         "gemini-2.0-flash",
-        "gemini-1.5-pro",
-        "gemini-2.0-flash-exp"
+        "gemini-1.5-flash-8b",
+        "gemini-1.5-pro"
     ]
     for d in fallback_defaults:
         if d not in candidates:
@@ -58,20 +81,19 @@ async def get_best_model(session: aiohttp.ClientSession, api_key: str, headers: 
     return candidates
 
 async def ask_ai(prompt: str) -> str:
-    """Отправляет запрос к Google Gemini с передачей точной актуальной даты."""
+    """Отправляет запрос к Google Gemini с передачей точной даты и гарантией чистого ответа."""
     global CACHED_MODEL
     raw_key = os.getenv("GEMINI_API_KEY", "")
     api_key = raw_key.strip().strip('"').strip("'")
 
     if not api_key:
-        return "⚠️ Переменная GEMINI_API_KEY не найдена на сервере Render."
+        return "⚠️ Переменная GEMINI_API_KEY не настроена на сервере Render."
 
     headers = {
         "Content-Type": "application/json",
         "x-goog-api-key": api_key
     }
 
-    # Формируем актуальную дату на русском
     now_dt = get_now()
     months_ru = [
         "января", "февраля", "марта", "апреля", "мая", "июня",
@@ -79,13 +101,11 @@ async def ask_ai(prompt: str) -> str:
     ]
     cur_date_str = f"{now_dt.day} {months_ru[now_dt.month - 1]} {now_dt.year} года, {now_dt.strftime('%H:%M')}"
 
+    # Лаконичная инструкция без провоцирующих слов
     system_instruction = (
-        f"Ты умный, полезный и дружелюбный русскоязычный ИИ-ассистент в Telegram.\n"
-        f"ТОЧНАЯ ТЕКУЩАЯ ДАТА И ВРЕМЯ ПОЛЬЗОВАТЕЛЯ: {cur_date_str}.\n"
-        "ВАЖНЫЕ ПРАВИЛА:\n"
-        "1. Отвечай СРАЗУ готовым финальным текстом для пользователя на русском языке.\n"
-        "2. СТРОГО ЗАПРЕЩЕНО выводить рассуждения, внутренние размышления, анализ вопроса или черновики (Drafting).\n"
-        "3. Отвечай четко, емко и по существу."
+        f"Ты умный и полезный русскоязычный ассистент в Telegram. "
+        f"Сегодняшняя дата: {cur_date_str}. "
+        "Отвечай сразу готовым текстом на русском языке, кратко и вежливо."
     )
 
     payload = {
@@ -110,7 +130,8 @@ async def ask_ai(prompt: str) -> str:
                             texts = [p.get("text", "") for p in parts if "text" in p]
                             if texts:
                                 CACHED_MODEL = model
-                                return clean_response("\n".join(texts))
+                                raw_text = "\n".join(texts)
+                                return clean_response(raw_text)
                     else:
                         err_body = await resp.text()
                         logger.warning(f"Модель {model} вернула {resp.status}: {err_body}")
@@ -124,4 +145,4 @@ async def ask_ai(prompt: str) -> str:
         msg = err_json.get("error", {}).get("message", last_error_text)
         return f"⚠️ Ошибка Gemini: {msg}"
     except Exception:
-        return f"⚠️ Ошибка Gemini: {last_error_text[:200]}"
+        return f"⚠️ Не удалось подключиться к Gemini: {last_error_text[:200]}"
