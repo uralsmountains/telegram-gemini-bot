@@ -18,6 +18,7 @@ from aiogram.types import (
 )
 
 import database
+from ai_assistant import ask_ai
 
 router = Router()
 
@@ -152,16 +153,13 @@ def parse_smart_time(text: str, now: datetime) -> Tuple[Optional[datetime], Opti
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "👋 <b>Привет! Я ваш бот-напоминалка.</b>\n\n"
-        "Я помогу вам не забыть о важных делах, созвонах или привычках.\n\n"
-        "📌 <b>Как мной пользоваться:</b>\n"
-        "• Нажмите <b>«➕ Создать напоминание»</b> — пошаговый диалог с быстрым выбором или вводом своего времени\n"
-        "• <b>«📋 Мои напоминания»</b> — список запланированных дел\n"
-        "• Или отправьте команду прямо строкой:\n"
+        "👋 <b>Привет! Я ваш умный бот-помощник с ИИ и напоминаниями.</b>\n\n"
+        "🤖 <b>Что я умею:</b>\n"
+        "• <b>Умный ИИ-ассистент:</b> просто напишите мне любой вопрос в чат — я отвечу с актуальными знаниями из Google!\n"
+        "• <b>Напоминания:</b> нажмите <b>«➕ Создать напоминание»</b> или используйте быструю команду:\n"
         "  <code>/remind через 2 часа проверить почту</code>\n"
         "  <code>/remind завтра в 10:00 созвон</code>\n"
-        "  <code>/remind 18:30 поужинать</code>\n"
-        "  <code>/remind 26.10 в 14:00 встреча</code>",
+        "• <b>«📋 Мои напоминания»</b> — список ваших дел с удалением в один клик.",
         parse_mode="HTML",
         reply_markup=get_main_keyboard()
     )
@@ -421,3 +419,44 @@ async def process_custom_time_text(message: Message, state: FSMContext):
         parse_mode="HTML",
         reply_markup=get_main_keyboard()
     )
+
+# --- ИИ-ассистент (Gemini) ---
+
+@router.message(Command("ai"))
+async def cmd_ai_handler(message: Message):
+    query = message.text.replace("/ai", "", 1).strip()
+    if not query:
+        await message.answer("💡 Задайте вопрос после команды, например:\n<code>/ai Какая сегодня погода в Москве?</code>", parse_mode="HTML")
+        return
+    await handle_ai_query(message, query)
+
+@router.message(F.text)
+async def default_ai_handler(message: Message, state: FSMContext):
+    # Если пользователь находится в процессе создания напоминания, не перехватываем
+    current_state = await state.get_state()
+    if current_state is not None:
+        return
+
+    # Пропускаем стандартные кнопки и команды
+    if message.text in ["➕ Создать напоминание", "📋 Мои напоминания", "❓ Справка", "/start", "/help", "/cancel"]:
+        return
+
+    await handle_ai_query(message, message.text)
+
+async def handle_ai_query(message: Message, query: str):
+    await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    answer = await ask_ai(query)
+
+    # Лимит одного сообщения Telegram — 4096 символов
+    if len(answer) <= 4000:
+        try:
+            await message.answer(answer, parse_mode="Markdown")
+        except Exception:
+            await message.answer(answer)
+    else:
+        for i in range(0, len(answer), 4000):
+            chunk = answer[i:i+4000]
+            try:
+                await message.answer(chunk, parse_mode="Markdown")
+            except Exception:
+                await message.answer(chunk)
