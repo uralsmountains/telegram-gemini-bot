@@ -1,12 +1,11 @@
 services:
   - type: web
-    name: telegram-gemini-bot
+    name: telegram-reminder-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
-    plan: free
+    startCommand: python main.py
     envVars:
-      - key: TELEGRAM_BOT_TOKEN
+      - key: BOT_TOKEN
         sync: false
-      - key: GEMINI_API_KEY
-        sync: false
+      - key: TIMEZONE_OFFSET
+        value: "5"
